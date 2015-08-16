@@ -178,11 +178,14 @@ if [ "${virt_type}" = "hvm" ]; then
         
         ## also need to create fake /etc/mtab so grub-install can figure out
         ## what device / is
+        ## at some point /etc/mtab became a symlink to /proc/self/mounts
+        mv ${vol_mnt}/etc/mtab ${vol_mnt}/etc/mtab.bak
         echo "${img_target_dev} / ext4 rw,relatime 0 0" > ${vol_mnt}/etc/mtab
         
         chroot ${vol_mnt} /sbin/grub-install --no-floppy ${block_dev}
 
         rm -f ${vol_mnt}/etc/mtab ${vol_mnt}/boot/grub/device.map
+        mv ${vol_mnt}/etc/mtab.bak ${vol_mnt}/etc/mtab
     elif [ ${grub_ver} = "grub2" ]; then
         ## *aaah* so much simpler!
         
