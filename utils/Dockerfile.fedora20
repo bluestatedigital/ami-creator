@@ -5,7 +5,7 @@
 ## fedora:20 is the current stable version, and python-imgcreate *is* available
 FROM fedora:20
 
-RUN yum -y install python-imgcreate
+RUN yum -y install python-imgcreate xfsprogs
 
 VOLUME [ "/srv/work" ]
 WORKDIR /tmp
