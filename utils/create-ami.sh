@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e -u
+set -e -u -o pipefail
 # set -x
 
 function die() {
@@ -10,6 +10,30 @@ function die() {
 
 function usage() {
     die "usage: $0 <image> <ami name> <ebs block device> <ebs vol id> <virtualization-type> [<grub-ver>]"
+}
+
+function fscheck() {
+    declare -a cmd
+    
+    case "${fs_type}" in
+        ext4 )
+            cmd=("fsck.ext4" "-f" "${@}")
+            ;;
+        
+        xfs )
+            cmd=("xfs_repair" "${@}")
+            ;;
+        
+        * )
+            die "unknown fs type ${fs_type}"
+            ;;
+    esac
+
+    if "${cmd[@]}" ; then
+        return 0
+    else
+        return $?
+    fi
 }
 
 [ $EUID -eq 0 ] || die "must be root"
@@ -65,6 +89,25 @@ fi
 #     exit 1
 # fi
 
+## check for required programs
+which aws        >/dev/null 2>&1 || die "need aws"
+which curl       >/dev/null 2>&1 || die "need curl"
+which jq         >/dev/null 2>&1 || die "need jq"
+which e2fsck     >/dev/null 2>&1 || die "need e2fsck"
+which resize2fs  >/dev/null 2>&1 || die "need resize2fs"
+which xfs_growfs >/dev/null 2>&1 || die "need xfs_growfs"
+which hdparm     >/dev/null 2>&1 || die "need hdparm"
+which parted     >/dev/null 2>&1 || die "need parted"
+which file       >/dev/null 2>&1 || die "need file"
+
+fs_type="ext4"
+if file "${img}" | grep -i -q xfs ; then
+    fs_type="xfs"
+fi
+
+vol_mnt="/mnt/ebs_vol"
+mkdir -p ${vol_mnt}
+
 echo "executing with..."
 echo "    img: ${img}"
 echo "    ami_name: ${ami_name}"
@@ -74,15 +117,7 @@ echo "    virt_type: ${virt_type}"
 echo "    grub_ver: ${grub_ver}"
 echo "    kernel_id: ${kernel_id}"
 echo "    root_device: ${root_device}"
-
-## check for required programs
-which aws       >/dev/null 2>&1 || die "need aws"
-which curl      >/dev/null 2>&1 || die "need curl"
-which jq        >/dev/null 2>&1 || die "need jq"
-which e2fsck    >/dev/null 2>&1 || die "need e2fsck"
-which resize2fs >/dev/null 2>&1 || die "need resize2fs"
-which hdparm    >/dev/null 2>&1 || die "need hdparm"
-which parted    >/dev/null 2>&1 || die "need parted"
+echo "    fs_type: ${fs_type}"
 
 ## the block device must exist
 [ -e "${block_dev}" ] || die "${block_dev} does not exist"
@@ -145,22 +180,28 @@ echo "writing image to ${img_target_dev}"
 dd if="${img}" of="${img_target_dev}" conv=fsync oflag=sync bs=8k
 
 ## force-check the filesystem; re-write the image if it fails
-if ! fsck.ext4 -n -f "${img_target_dev}" ; then
+if ! fscheck -n "${img_target_dev}" ; then
     echo "well, that didn't work; trying again"
     dd if="${img}" of="${img_target_dev}" conv=fsync oflag=sync bs=8k
-    fsck.ext4 -n -f "${img_target_dev}"
+    fscheck -n "${img_target_dev}"
 fi
 
 ## resize the filesystem
-e2fsck -f "${img_target_dev}"
-resize2fs "${img_target_dev}"
+fscheck "${img_target_dev}"
+
+if [ "${fs_type}" == "xfs" ]; then
+    ## can only grow a mounted xfs filesystem. weird.
+    mount -t xfs "${img_target_dev}" "${vol_mnt}"
+    xfs_growfs "${vol_mnt}"
+    umount ${vol_mnt}
+else
+    resize2fs "${img_target_dev}"
+fi
 
 if [ "${virt_type}" = "hvm" ]; then
     ## install grub bootloader for hvm instances; they boot like real hardware
 
     # mount the volume so
-    vol_mnt="/mnt/ebs_vol"
-    mkdir -p ${vol_mnt}
     mount -t ext4 "${img_target_dev}" "${vol_mnt}"
     
     ## mount special filesystems so the chroot is like running in a real
